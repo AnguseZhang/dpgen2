@@ -148,7 +148,10 @@ class RunDPTrain(OP):
                     'out msg', out, '\n',
                     'err msg', err, '\n'
                 )
+            fplog.write('#=================== train std out ===================\n')
             fplog.write(out)
+            fplog.write('#=================== train std err ===================\n')
+            fplog.write(err)
 
             # freeze model
             ret, out, err = run_command(['dp', 'freeze', '-o', 'frozen_model.pb'])
@@ -159,7 +162,10 @@ class RunDPTrain(OP):
                     'out msg', out, '\n',
                     'err msg', err, '\n'
                 )
+            fplog.write('#=================== freeze std out ===================\n')
             fplog.write(out)
+            fplog.write('#=================== freeze std err ===================\n')
+            fplog.write(err)
 
             clean_before_quit()
         
@@ -314,3 +320,6 @@ def _expand_all_multi_sys_to_sys(list_multi_sys):
     for ii in list_multi_sys:
         all_sys_dirs = all_sys_dirs + _expand_multi_sys_to_sys(ii)
     return all_sys_dirs
+
+
+config_args = RunDPTrain.training_args

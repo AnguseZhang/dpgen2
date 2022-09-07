@@ -68,8 +68,15 @@ from dpgen2.constants import (
 from dpgen2.utils import (
     dump_object_to_file,
     load_object_from_file,
+    normalize_alloy_conf_dict,
+    generate_alloy_conf_file_content,
+    dflow_config,
 )
 from dpgen2.utils.step_config import normalize as normalize_step_dict
+from typing import (
+    Union, List,
+)
+
 default_config = normalize_step_dict(
     {
         "template_config" : {
@@ -77,6 +84,13 @@ default_config = normalize_step_dict(
         }
     }
 )
+
+def expand_sys_str(root_dir: Union[str, Path]) -> List[str]:
+    root_dir = Path(root_dir)
+    matches = [str(d) for d in root_dir.rglob("*") if (d / "type.raw").is_file()]
+    if (root_dir / "type.raw").is_file():
+        matches.append(str(root_dir))
+    return matches
 
 def make_concurrent_learning_op (
         train_style : str = 'dp',
@@ -90,6 +104,7 @@ def make_concurrent_learning_op (
         run_fp_config : str = default_config,
         select_confs_config : str = default_config,
         collect_data_config : str = default_config,
+        cl_step_config : str = default_config,
         upload_python_package : bool = None,
 ):
     if train_style == 'dp':
@@ -143,10 +158,38 @@ def make_concurrent_learning_op (
         "concurrent-learning",
         block_cl_op,
         upload_python_package = upload_python_package,
-        step_config = default_config,
+        step_config = cl_step_config,
     )
         
     return dpgen_op
+
+
+def make_conf_list(
+        conf_list,
+        type_map,
+        fmt='vasp/poscar'
+):
+    # load confs from files
+    if isinstance(conf_list, list):
+        conf_list_fname = []
+        for jj in conf_list:
+            confs = sorted(glob.glob(jj))
+            conf_list_fname = conf_list_fname + confs
+        conf_list = []
+        for ii in conf_list_fname:
+            ss = dpdata.System(ii, type_map=type_map, fmt=fmt)
+            ss.to('lammps/lmp', 'tmp.lmp')
+            conf_list.append(Path('tmp.lmp').read_text())
+        if Path('tmp.lmp').is_file():
+            os.remove('tmp.lmp')
+    # generate alloy confs
+    elif isinstance(conf_list, dict):
+        conf_list['type_map'] = type_map
+        i_dict = normalize_alloy_conf_dict(conf_list)
+        conf_list = generate_alloy_conf_file_content(**i_dict)
+    else:
+        raise RuntimeError('unknown input format of conf_list: ', type(conf_list))
+    return conf_list
 
 
 def make_naive_exploration_scheduler(
@@ -170,23 +213,14 @@ def make_naive_exploration_scheduler(
         ##  ignore the expansion of sys_idx
         # get all file names of md initial configuraitons
         sys_idx = job['sys_idx']
-        conf_list_fname = []        
+        conf_list = []        
         for ii in sys_idx:
-            for jj in sys_configs[ii]:                
-                confs = sorted(glob.glob(jj))
-                conf_list_fname = conf_list_fname + confs
-        # make list of configuration file content
-        conf_list = []
-        for ii in conf_list_fname:
-            ss = dpdata.System(ii, type_map=type_map)
-            ss.to('lammps/lmp', 'tmp.lmp')
-            conf_list.append(Path('tmp.lmp').read_text())
-        if Path('tmp.lmp').is_file():
-            os.remove('tmp.lmp')
+            conf_list += make_conf_list(sys_configs[ii], type_map)
         # add the list to task group
+        n_sample = job.get('n_sample')
         tgroup.set_conf(
             conf_list,
-            n_sample = 3,
+            n_sample=n_sample,
         )
         temps = job['temps']
         press = job['press']
@@ -251,15 +285,20 @@ def get_kspacing_kgamma_from_incar(
 def workflow_concurrent_learning(
         config,
 ):
+    default_config = normalize_step_dict(config.get('default_config', {}))
+
     train_style = config['train_style']
     explore_style = config['explore_style']
     fp_style = config['fp_style']
-    prep_train_config = normalize_step_dict(config.get('prep_train_config', {}))
-    run_train_config = normalize_step_dict(config.get('run_train_config', {}))
-    prep_explore_config = normalize_step_dict(config.get('prep_explore_config', {}))
-    run_explore_config = normalize_step_dict(config.get('run_explore_config', {}))
-    prep_fp_config = normalize_step_dict(config.get('prep_fp_config', {}))
-    run_fp_config = normalize_step_dict(config.get('run_fp_config', {}))
+    prep_train_config = normalize_step_dict(config.get('prep_train_config', default_config))
+    run_train_config = normalize_step_dict(config.get('run_train_config', default_config))
+    prep_explore_config = normalize_step_dict(config.get('prep_explore_config', default_config))
+    run_explore_config = normalize_step_dict(config.get('run_explore_config', default_config))
+    prep_fp_config = normalize_step_dict(config.get('prep_fp_config', default_config))
+    run_fp_config = normalize_step_dict(config.get('run_fp_config', default_config))
+    select_confs_config = normalize_step_dict(config.get('select_confs_config', default_config))
+    collect_data_config = normalize_step_dict(config.get('collect_data_config', default_config))
+    cl_step_config = normalize_step_dict(config.get('cl_step_config', default_config))
     upload_python_package = config.get('upload_python_package', None)
     init_models_paths = config.get('training_iter0_model_path')
 
@@ -273,13 +312,12 @@ def workflow_concurrent_learning(
         run_explore_config = run_explore_config,
         prep_fp_config = prep_fp_config,
         run_fp_config = run_fp_config,
+        select_confs_config = select_confs_config,
+        collect_data_config = collect_data_config,
+        cl_step_config = cl_step_config,
         upload_python_package = upload_python_package,
     )
     scheduler = make_naive_exploration_scheduler(config)
-    scheduler_file = Path('in_scheduler.dat')
-    with open(scheduler_file, 'wb') as fp:
-        pickle.dump(scheduler, fp)
-    scheduler_arti = upload_artifact(scheduler_file)
 
     type_map = config['type_map']
     numb_models = config['numb_models']
@@ -289,18 +327,17 @@ def workflow_concurrent_learning(
     fp_config = config.get('fp_config', {})
     kspacing, kgamma = get_kspacing_kgamma_from_incar(config['fp_incar'])
     fp_pp_files = config['fp_pp_files']
-    potcar_names = {}
-    for kk,vv in zip(type_map, fp_pp_files):
-        potcar_names[kk] = f"{config['fp_pp_path']}/{vv}"
+    incar_file = config['fp_incar']    
     fp_inputs = VaspInputs(
         kspacing = kspacing,
         kgamma = kgamma,
-        incar_template_name = config['fp_incar'],
-        potcar_names = potcar_names,
+        incar_template_name = incar_file,
+        potcar_names = fp_pp_files,
     )
-    fp_arti = upload_artifact(
-        dump_object_to_file(fp_inputs, 'vasp_inputs.dat'))        
-    init_data = upload_artifact(config['init_data_sys'])
+    init_data = config['init_data_sys']
+    if isinstance(init_data,str):
+        init_data = expand_sys_str(init_data)
+    init_data = upload_artifact(init_data)
     iter_data = upload_artifact([])
     if init_models_paths is not None:
         init_models = upload_artifact(init_models_paths)
@@ -318,10 +355,10 @@ def workflow_concurrent_learning(
             "train_config" : train_config,
             "lmp_config" : lmp_config,
             "fp_config" : fp_config,
+            'fp_inputs' : fp_inputs,
+            "exploration_scheduler" : scheduler,
         },
         artifacts = {
-            "exploration_scheduler" : scheduler_arti,
-            'fp_inputs' : fp_arti,
             "init_models" : init_models,
             "init_data" : init_data,
             "iter_data" : iter_data,
@@ -329,17 +366,13 @@ def workflow_concurrent_learning(
     )
     return dpgen_step
 
+
 def submit_concurrent_learning(
         wf_config,
+        reuse_step = None,
 ):
-    # set global config
-    from dflow import config, s3_config
-    dflow_config = wf_config.get('dflow_config', None)
-    if dflow_config :
-        config["host"] = dflow_config.get('host', None)
-        s3_config["endpoint"] = dflow_config.get('s3_endpoint', None)
-        config["k8s_api_server"] = dflow_config.get('k8s_api_server', None)
-        config["token"] = dflow_config.get('token', None)    
+    dflow_config_data = wf_config.get('dflow_config', None)
+    dflow_config(dflow_config_data)
 
     # lebesgue context
     from dflow.plugins.lebesgue import LebesgueContext
@@ -351,15 +384,87 @@ def submit_concurrent_learning(
     else :
         lebesgue_context = None
 
-    # print('config:', config)
-    # print('s3_config:',s3_config)
-    # print('lebsque context:', lb_context_config)
-
     dpgen_step = workflow_concurrent_learning(wf_config)
 
     wf = Workflow(name="dpgen", context=lebesgue_context)
     wf.add(dpgen_step)
 
-    wf.submit()
+    wf.submit(reuse_step=reuse_step)
+
+    return wf
+
+
+def print_list_steps(
+        steps,
+):
+    ret = []
+    for idx,ii in enumerate(steps):
+        ret.append(f'{idx:8d}    {ii}')
+    return '\n'.join(ret)
+
+
+def expand_idx (in_list) :
+    ret = []
+    for ii in in_list :
+        if isinstance(ii, int) :
+            ret.append(ii)
+        elif isinstance(ii, str):
+            step_str = ii.split(':')
+            if len(step_str) > 1 :
+                step = int(step_str[1])
+            else :
+                step = 1
+            range_str = step_str[0].split('-')
+            if len(range_str) == 2:
+                ret += range(int(range_str[0]), int(range_str[1]), step)
+            elif len(range_str) == 1 :
+                ret += [int(range_str[0])]
+            else:
+                raise RuntimeError('not expected range string', step_str[0])
+    ret = sorted(list(set(ret)))
+    return ret
+
+
+def successful_step_keys(wf):
+    all_step_keys_ = wf.query_keys_of_steps()
+    wf_info = wf.query()
+    all_step_keys = []
+    for ii in all_step_keys_:
+        if wf_info.get_step(key=ii)[0]['phase'] == 'Succeeded':
+            all_step_keys.append(ii)
+    return all_step_keys
+    
+
+def resubmit_concurrent_learning(
+        wf_config,
+        wfid,
+        list_steps = False,
+        reuse = None,
+):
+    # set global config
+    from dflow import config, s3_config
+    dflow_config = wf_config.get('dflow_config', None)
+    if dflow_config :
+        config["host"] = dflow_config.get('host', None)
+        s3_config["endpoint"] = dflow_config.get('s3_endpoint', None)
+        config["k8s_api_server"] = dflow_config.get('k8s_api_server', None)
+        config["token"] = dflow_config.get('token', None)    
+
+    old_wf = Workflow(id=wfid)
+
+    all_step_keys = successful_step_keys(old_wf)
+    if list_steps:
+        prt_str = print_list_steps(all_step_keys)
+        print(prt_str)
+
+    if reuse is None:
+        return None
+    reuse_idx = expand_idx(reuse)
+    reuse_step = []
+    old_wf_info = old_wf.query()
+    for ii in reuse_idx:
+        reuse_step += old_wf_info.get_step(key=all_step_keys[ii])
+
+    wf = submit_concurrent_learning(wf_config, reuse_step=reuse_step)
 
     return wf
