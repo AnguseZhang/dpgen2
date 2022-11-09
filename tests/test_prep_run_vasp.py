@@ -34,7 +34,7 @@ except ModuleNotFoundError:
     # case of upload everything to argo, no context needed
     pass
 from context import (
-    upload_python_package,
+    upload_python_packages,
     skip_ut_with_dflow,
     skip_ut_with_dflow_reason,
     default_image,
@@ -109,13 +109,13 @@ class TestPrepVaspTaskGroup(unittest.TestCase):
         op = MockedPrepVasp()
         vasp_inputs = VaspInputs(
                 0.16,
-                True,
                 self.incar,
-                {'foo': self.potcar}
+                {'foo': self.potcar},
+                True,
             )
         out = op.execute( OPIO({
             'confs' : self.confs,
-            'inputs' : vasp_inputs,
+            'config' : {'inputs' : vasp_inputs},
             'type_map' : self.type_map,
         }) )
         tdirs = check_vasp_tasks(self, self.ntasks)
@@ -220,23 +220,22 @@ class TestPrepRunVasp(unittest.TestCase):
             "prep-run-vasp",
             MockedPrepVasp,
             MockedRunVasp,
-            upload_python_package = upload_python_package,
+            upload_python_packages = upload_python_packages,
             prep_config = default_config,
             run_config = default_config,
         )
         vasp_inputs = VaspInputs(
             0.16,
-            True,
             self.incar,
-            {'foo': self.potcar}
+            {'foo': self.potcar},
+            True,
         )
         prep_run_step = Step(
             'prep-run-step', 
             template = steps,
             parameters = {
-                "fp_config": {},
                 'type_map' : self.type_map,
-                'inputs' : vasp_inputs,
+                'fp_config' : {'inputs' : vasp_inputs},
             },
             artifacts = {
                 "confs" : self.confs,

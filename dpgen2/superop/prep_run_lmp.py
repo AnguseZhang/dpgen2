@@ -29,7 +29,7 @@ from dpgen2.utils.step_config import normalize as normalize_step_dict
 from dpgen2.utils.step_config import init_executor
 
 import os
-from typing import Set, List
+from typing import Optional, Set, List
 from pathlib import Path
 from copy import deepcopy
 
@@ -41,7 +41,7 @@ class PrepRunLmp(Steps):
             run_op : OP,
             prep_config : dict = normalize_step_dict({}),
             run_config : dict = normalize_step_dict({}),
-            upload_python_package : str = None,
+            upload_python_packages : Optional[List[os.PathLike]] = None,
     ):
         self._input_parameters = {
             "block_id" : InputParameter(type=str, value=""),
@@ -58,6 +58,7 @@ class PrepRunLmp(Steps):
             "logs": OutputArtifact(),
             "trajs": OutputArtifact(),
             "model_devis": OutputArtifact(),
+            "plm_output": OutputArtifact(optional=True),
         }        
 
         super().__init__(
@@ -90,7 +91,7 @@ class PrepRunLmp(Steps):
             run_op,
             prep_config = prep_config,
             run_config = run_config,
-            upload_python_package = upload_python_package,
+            upload_python_packages = upload_python_packages,
         )            
         
     @property
@@ -121,7 +122,7 @@ def _prep_run_lmp(
         run_op : OP,
         prep_config : dict = normalize_step_dict({}),
         run_config : dict = normalize_step_dict({}),
-        upload_python_package : str = None,
+        upload_python_packages : Optional[List[os.PathLike]] = None,
 ):
     prep_config = deepcopy(prep_config)
     run_config = deepcopy(run_config)
@@ -137,7 +138,7 @@ def _prep_run_lmp(
             output_artifact_archive={
                 "task_paths": None
             },
-            python_packages = upload_python_package,
+            python_packages = upload_python_packages,
             **prep_template_config,
         ),
         parameters={
@@ -159,9 +160,9 @@ def _prep_run_lmp(
                 "int('{{item}}')",
                 input_parameter = ["task_name"],
                 input_artifact = ["task_path"],
-                output_artifact = ["log", "traj", "model_devi"],
+                output_artifact = ["log", "traj", "model_devi", "plm_output"],
             ),
-            python_packages = upload_python_package,
+            python_packages = upload_python_packages,
             **run_template_config,
         ),
         parameters={
@@ -184,7 +185,6 @@ def _prep_run_lmp(
     prep_run_steps.outputs.artifacts["logs"]._from = run_lmp.outputs.artifacts["log"]
     prep_run_steps.outputs.artifacts["trajs"]._from = run_lmp.outputs.artifacts["traj"]
     prep_run_steps.outputs.artifacts["model_devis"]._from = run_lmp.outputs.artifacts["model_devi"]
+    prep_run_steps.outputs.artifacts["plm_output"]._from = run_lmp.outputs.artifacts["plm_output"]
 
     return prep_run_steps
-
-

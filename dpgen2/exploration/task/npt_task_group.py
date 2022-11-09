@@ -1,10 +1,12 @@
 import itertools, random
 from typing import (
     List,
+    Optional,
 )
 from . import (
     ExplorationTask,
     ExplorationTaskGroup,
+    ConfSamplingTaskGroup,
 )
 from .lmp import make_lmp_input
 from dpgen2.constants import (
@@ -13,64 +15,33 @@ from dpgen2.constants import (
     model_name_pattern,
 )
 
-class NPTTaskGroup(ExplorationTaskGroup):
+class NPTTaskGroup(ConfSamplingTaskGroup):
     def __init__(
             self, 
     ):
         super().__init__()
-        self.conf_set = False
         self.md_set = False
-
-    def set_conf(
-            self,
-            conf_list : List[str],
-            n_sample : int = None,
-            random_sample : bool = False,
-    ):
-        """
-        Set the configurations of exploration
-
-        Parameters
-        ----------
-        conf_list       str
-                        A list of file contents
-        n_sample        int
-                        Number of samples drawn from the conf list each time 
-                        `make_task` is called. If set to `None`, 
-                        `n_sample` is set to length of the conf_list.
-        random_sample   bool
-                        If true the confs are randomly sampled, otherwise are
-                        consecutively sampled from the conf_list
-        """
-        self.conf_list = conf_list
-        if n_sample is None:
-            self.n_sample = len(self.conf_list)
-        else:
-            self.n_sample = n_sample
-        self.random_sample = random_sample
-        self.conf_queue = []
-        self.conf_set = True
 
     def set_md(
             self,
             numb_models,
             mass_map,
             temps : List[float],
-            press : List[float] = None,
+            press : Optional[List[float]] = None,
             ens : str = 'npt',
             dt : float = 0.001,
             nsteps : int = 1000,
             trj_freq : int = 10,
             tau_t : float = 0.1,
             tau_p : float = 0.5,
-            pka_e : float = None,
-            neidelay : int = None,
+            pka_e : Optional[float] = None,
+            neidelay : Optional[int] = None,
             no_pbc : bool = False,
             use_clusters : bool = False,
-            relative_f_epsilon : float = None,
-            relative_v_epsilon : float = None,
-            ele_temp_f : float = None,
-            ele_temp_a : float = None,
+            relative_f_epsilon : Optional[float] = None,
+            relative_v_epsilon : Optional[float] = None,
+            ele_temp_f : Optional[float] = None,
+            ele_temp_a : Optional[float] = None,
     ):
         """
         Set MD parameters
@@ -120,24 +91,12 @@ class NPTTaskGroup(ExplorationTaskGroup):
             self.add_task(self._make_lmp_task(cc, tt, pp))
         return self
 
-    def _sample_confs(
-            self,
-    ):
-        confs = []
-        for ii in range(self.n_sample):
-            if len(self.conf_queue) == 0:
-                add_list = self.conf_list.copy()
-                if self.random_sample:
-                    random.shuffle(add_list)
-                self.conf_queue += add_list
-            confs.append(self.conf_queue.pop(0))
-        return confs
                 
     def _make_lmp_task(
             self,
             conf : str,
             tt : float,
-            pp : float,
+            pp : Optional[float],
     ) -> ExplorationTask:
         task = ExplorationTask()
         task\

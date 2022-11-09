@@ -56,6 +56,8 @@ from dpgen2.exploration.task import (
     ExplorationStage,
     ExplorationTask,
     NPTTaskGroup,
+    LmpTemplateTaskGroup,
+    make_task_group_from_config,
 )
 from dpgen2.exploration.selector import (
     ConfSelectorLammpsFrames,
@@ -100,16 +102,16 @@ def make_concurrent_learning_op (
         train_style : str = 'dp',
         explore_style : str = 'lmp',
         fp_style : str = 'vasp',
-        prep_train_config : str = default_config,
-        run_train_config : str = default_config,
-        prep_explore_config : str = default_config,
-        run_explore_config : str = default_config,
-        prep_fp_config : str = default_config,
-        run_fp_config : str = default_config,
-        select_confs_config : str = default_config,
-        collect_data_config : str = default_config,
-        cl_step_config : str = default_config,
-        upload_python_package : bool = None,
+        prep_train_config : dict = default_config,
+        run_train_config : dict = default_config,
+        prep_explore_config : dict = default_config,
+        run_explore_config : dict = default_config,
+        prep_fp_config : dict = default_config,
+        run_fp_config : dict = default_config,
+        select_confs_config : dict = default_config,
+        collect_data_config : dict = default_config,
+        cl_step_config : dict = default_config,
+        upload_python_packages : Optional[List[os.PathLike]] = None,
 ):
     if train_style == 'dp':
         prep_run_train_op = PrepRunDPTrain(
@@ -118,7 +120,7 @@ def make_concurrent_learning_op (
             RunDPTrain,
             prep_config = prep_train_config,
             run_config = run_train_config,
-            upload_python_package = upload_python_package,
+            upload_python_packages = upload_python_packages,
         )
     else:
         raise RuntimeError(f'unknown train_style {train_style}')
@@ -129,7 +131,7 @@ def make_concurrent_learning_op (
             RunLmp,
             prep_config = prep_explore_config,
             run_config = run_explore_config,
-            upload_python_package = upload_python_package,
+            upload_python_packages = upload_python_packages,
         )
     else:
         raise RuntimeError(f'unknown explore_style {explore_style}')
@@ -140,7 +142,7 @@ def make_concurrent_learning_op (
             RunVasp,
             prep_config = prep_fp_config,
             run_config = run_fp_config,
-            upload_python_package = upload_python_package,
+            upload_python_packages = upload_python_packages,
         )
     else:
         raise RuntimeError(f'unknown fp_style {fp_style}')
@@ -155,13 +157,13 @@ def make_concurrent_learning_op (
         CollectData,
         select_confs_config = select_confs_config,
         collect_data_config = collect_data_config,
-        upload_python_package = upload_python_package,
+        upload_python_packages = upload_python_packages,
     )    
     # dpgen
     dpgen_op = ConcurrentLearning(
         "concurrent-learning",
         block_cl_op,
-        upload_python_package = upload_python_package,
+        upload_python_packages = upload_python_packages,
         step_config = cl_step_config,
     )
         
@@ -182,10 +184,8 @@ def make_conf_list(
         conf_list = []
         for ii in conf_list_fname:
             ss = dpdata.System(ii, type_map=type_map, fmt=fmt)
-            ss.to('lammps/lmp', 'tmp.lmp')
-            conf_list.append(Path('tmp.lmp').read_text())
-        if Path('tmp.lmp').is_file():
-            os.remove('tmp.lmp')
+            ss_str = dpdata.lammps.lmp.from_system_data(ss, 0)
+            conf_list.append(ss_str)
     # generate alloy confs
     elif isinstance(conf_list, dict):
         conf_list['type_map'] = type_map
@@ -216,43 +216,38 @@ def make_naive_exploration_scheduler(
     max_numb_iter = config['max_numb_iter'] if old_style else config['explore']['max_numb_iter']
     fatal_at_max = config.get('fatal_at_max', True) if old_style else config['explore']['fatal_at_max']
     scheduler = ExplorationScheduler()
+    
+    sys_configs_lmp = []
+    for sys_config in sys_configs:
+        sys_configs_lmp.append(make_conf_list(sys_config, type_map))
 
-    for job in model_devi_jobs:
-        # task group
-        tgroup = NPTTaskGroup()
-        ##  ignore the expansion of sys_idx
-        # get all file names of md initial configurations
-        try:
-            sys_idx = job['sys_idx']
-        except KeyError:
-            sys_idx = job['conf_idx']
-        conf_list = []        
-        for ii in sys_idx:
-            conf_list += make_conf_list(sys_configs[ii], type_map)
-        # add the list to task group
-        n_sample = job.get('n_sample')
-        tgroup.set_conf(
-            conf_list,
-            n_sample=n_sample,
-        )
-        temps = job['temps']
-        press = job['press']
-        trj_freq = job['trj_freq']
-        nsteps = job['nsteps']
-        ensemble = job['ensemble']
-        # add md settings
-        tgroup.set_md(
-            numb_models,
-            mass_map,
-            temps = temps,
-            press = press,
-            ens = ensemble,
-            nsteps = nsteps,
-        )
-        tasks = tgroup.make_task()
+    for job_ in model_devi_jobs:
+        if not isinstance(job_, list):
+            job = [job_]
+        else:
+            job = job_        
         # stage
         stage = ExplorationStage()
-        stage.add_task_group(tasks)
+        for jj in job:
+            n_sample = jj.pop('n_sample')
+            ##  ignore the expansion of sys_idx
+            # get all file names of md initial configurations
+            try:
+                sys_idx = jj.pop('sys_idx')
+            except KeyError:
+                sys_idx = jj.pop('conf_idx')
+            conf_list = []        
+            for ii in sys_idx:
+                conf_list += sys_configs_lmp[ii]
+            # make task group
+            tgroup = make_task_group_from_config(numb_models, mass_map, jj)
+            # add the list to task group
+            tgroup.set_conf(
+                conf_list,
+                n_sample=n_sample,
+            )
+            tasks = tgroup.make_task()
+            stage.add_task_group(tasks)
         # trust level
         trust_level = TrustLevel(
             config['model_devi_f_trust_lo'] if old_style else config['explore']['f_trust_lo'],
@@ -284,6 +279,8 @@ def get_kspacing_kgamma_from_incar(
 ):
     with open(fname) as fp:
         lines = fp.readlines()
+    ks = None
+    kg = None
     for ii in lines:
         if 'KSPACING' in ii:
             ks = float(ii.split('=')[1])
@@ -294,12 +291,13 @@ def get_kspacing_kgamma_from_incar(
                 kg = False
             else:
                 raise RuntimeError(f"invalid kgamma value {ii.split('=')[1]}")
+    assert ks is not None and kg is not None
     return ks, kg
 
 
 def workflow_concurrent_learning(
         config : Dict,
-        old_style : Optional[bool] = False,
+        old_style : bool = False,
 ):
     default_config = normalize_step_dict(config.get('default_config', {})) if old_style else config['default_step_config']
 
@@ -315,8 +313,13 @@ def workflow_concurrent_learning(
     select_confs_config = normalize_step_dict(config.get('select_confs_config', default_config)) if old_style else config['step_configs']['select_confs_config']
     collect_data_config = normalize_step_dict(config.get('collect_data_config', default_config)) if old_style else config['step_configs']['collect_data_config']
     cl_step_config = normalize_step_dict(config.get('cl_step_config', default_config)) if old_style else config['step_configs']['cl_step_config']
-    upload_python_package = config.get('upload_python_package', None)
-    init_models_paths = config.get('training_iter0_model_path')
+    upload_python_packages = config.get('upload_python_packages', None)
+    init_models_paths = config.get('training_iter0_model_path', None) if old_style else config['train'].get('training_iter0_model_path', None)
+    if upload_python_packages is not None and isinstance(upload_python_packages, str):
+        upload_python_packages = [upload_python_packages]
+    if upload_python_packages is not None:
+        _upload_python_packages: List[os.PathLike] = [Path(ii) for ii in upload_python_packages]
+        upload_python_packages = _upload_python_packages
 
     concurrent_learning_op = make_concurrent_learning_op(
         train_style,
@@ -331,7 +334,7 @@ def workflow_concurrent_learning(
         select_confs_config = select_confs_config,
         collect_data_config = collect_data_config,
         cl_step_config = cl_step_config,
-        upload_python_package = upload_python_package,
+        upload_python_packages = upload_python_packages,
     )
     scheduler = make_naive_exploration_scheduler(config, old_style=old_style)
 
@@ -350,10 +353,11 @@ def workflow_concurrent_learning(
         incar_template_name = incar_file,
         potcar_names = fp_pp_files,
     )
+    fp_config['inputs'] = fp_inputs
     init_data_prefix = config.get('init_data_prefix') if old_style else config['inputs']['init_data_prefix']
     init_data = config['init_data_sys'] if old_style else config['inputs']['init_data_sys']
     if init_data_prefix is not None:
-        init_data = [os.path.join(init_data_prefix, ii) for ii in init_data_sys]
+        init_data = [os.path.join(init_data_prefix, ii) for ii in init_data]
     if isinstance(init_data,str):
         init_data = expand_sys_str(init_data)
     init_data = upload_artifact(init_data)
@@ -374,7 +378,6 @@ def workflow_concurrent_learning(
             "train_config" : train_config,
             "lmp_config" : lmp_config,
             "fp_config" : fp_config,
-            'fp_inputs' : fp_inputs,
             "exploration_scheduler" : scheduler,
         },
         artifacts = {

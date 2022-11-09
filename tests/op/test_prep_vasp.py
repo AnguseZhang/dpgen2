@@ -73,10 +73,10 @@ Gamma
 """)
         iincar = 'template.incar'
         ipotcar = {'H' : 'POTCAR_H', 'O' : 'POTCAR_O'}
-        vi = VaspInputs(0.1, True, iincar, ipotcar)
+        vi = VaspInputs(0.1, iincar, ipotcar, True)
         op = PrepVasp()
         opout = op.execute(OPIO({
-            'inputs': vi,
+            'config': {'inputs' : vi},
             'confs' : self.confs,
             'type_map' : self.type_map,
         }))

@@ -27,7 +27,8 @@ from dflow.python import(
 )
 import pickle, jsonpickle, os
 from typing import (
-    List
+    List,
+    Optional,
 )
 from pathlib import Path
 from dpgen2.exploration.scheduler import ExplorationScheduler
@@ -117,7 +118,7 @@ class ConcurrentLearningLoop(Steps):
             name : str,
             block_op : OPTemplate,
             step_config : dict = normalize_step_dict({}),
-            upload_python_package : str = None,
+            upload_python_packages : Optional[List[os.PathLike]] = None,
     ):
         self._input_parameters={
             "block_id" : InputParameter(),
@@ -130,7 +131,6 @@ class ConcurrentLearningLoop(Steps):
             "fp_config" : InputParameter(),
             "exploration_scheduler" : InputParameter(),
             "lmp_task_grp" : InputParameter(),
-            "fp_inputs" : InputParameter(),
         }
         self._input_artifacts={
             "init_models" : InputArtifact(optional=True),
@@ -174,7 +174,7 @@ class ConcurrentLearningLoop(Steps):
             name,
             block_op,
             step_config = step_config,
-            upload_python_package = upload_python_package,
+            upload_python_packages = upload_python_packages,
         )
 
     @property
@@ -204,13 +204,13 @@ class ConcurrentLearning(Steps):
             name : str,
             block_op : OPTemplate,
             step_config : dict = normalize_step_dict({}),
-            upload_python_package : str = None,
+            upload_python_packages : Optional[List[os.PathLike]] = None,
     ):
         self.loop = ConcurrentLearningLoop(
             name+'-loop',
             block_op,
             step_config = step_config,
-            upload_python_package = upload_python_package,
+            upload_python_packages = upload_python_packages,
         )
         
         self._input_parameters={
@@ -220,7 +220,6 @@ class ConcurrentLearning(Steps):
             "train_config" : InputParameter(),
             "lmp_config" : InputParameter(),
             "fp_config" : InputParameter(),
-            "fp_inputs" : InputParameter(),
             "exploration_scheduler" : InputParameter(),
         }
         self._input_artifacts={
@@ -261,7 +260,7 @@ class ConcurrentLearning(Steps):
             self.loop,
             self.loop_key,
             step_config = step_config,
-            upload_python_package = upload_python_package,
+            upload_python_packages = upload_python_packages,
         )
 
     @property
@@ -295,7 +294,7 @@ def _loop (
         name : str,
         block_op : OPTemplate,
         step_config : dict = normalize_step_dict({}),
-        upload_python_package : str = None,
+        upload_python_packages : Optional[List[os.PathLike]] = None,
 ):    
     step_config = deepcopy(step_config)
     step_template_config = step_config.pop('template_config')
@@ -313,7 +312,6 @@ def _loop (
             "lmp_config" : steps.inputs.parameters["lmp_config"],
             "conf_selector" : steps.inputs.parameters["conf_selector"],
             "fp_config" : steps.inputs.parameters["fp_config"],
-            "fp_inputs" : steps.inputs.parameters["fp_inputs"],
             "lmp_task_grp" : steps.inputs.parameters["lmp_task_grp"],
         },
         artifacts={
@@ -329,7 +327,7 @@ def _loop (
         name = name + '-scheduler',
         template=PythonOPTemplate(
             SchedulerWrapper,
-            python_packages = upload_python_package,
+            python_packages = upload_python_packages,
             **step_template_config,
         ),
         parameters={
@@ -349,7 +347,7 @@ def _loop (
         name = name + '-make-block-id',
         template=PythonOPTemplate(
             MakeBlockId,
-            python_packages = upload_python_package,
+            python_packages = upload_python_packages,
             **step_template_config,
         ),
         parameters={
@@ -375,7 +373,6 @@ def _loop (
             "lmp_config" : steps.inputs.parameters["lmp_config"],
             "conf_selector" : scheduler_step.outputs.parameters["conf_selector"],
             "fp_config" : steps.inputs.parameters["fp_config"],
-            "fp_inputs" : steps.inputs.parameters["fp_inputs"],
             "exploration_scheduler" : scheduler_step.outputs.parameters["exploration_scheduler"],
             "lmp_task_grp" : scheduler_step.outputs.parameters["lmp_task_grp"],
         },
@@ -417,7 +414,7 @@ def _dpgen(
         loop_op,
         loop_key,
         step_config : dict = normalize_step_dict({}),
-        upload_python_package : str = None
+        upload_python_packages : Optional[List[os.PathLike]] = None
 ):    
     step_config = deepcopy(step_config)
     step_template_config = step_config.pop('template_config')
@@ -427,7 +424,7 @@ def _dpgen(
         name = name + '-scheduler',
         template=PythonOPTemplate(
             SchedulerWrapper,
-            python_packages = upload_python_package,
+            python_packages = upload_python_packages,
             **step_template_config,
         ),
         parameters={
@@ -447,7 +444,7 @@ def _dpgen(
         name = name + '-make-block-id',
         template=PythonOPTemplate(
             MakeBlockId,
-            python_packages = upload_python_package,
+            python_packages = upload_python_packages,
             **step_template_config,
         ),
         parameters={
@@ -473,7 +470,6 @@ def _dpgen(
             "conf_selector" : scheduler_step.outputs.parameters['conf_selector'],
             "lmp_config" : steps.inputs.parameters['lmp_config'],
             "fp_config" : steps.inputs.parameters['fp_config'],
-            "fp_inputs" : steps.inputs.parameters['fp_inputs'],
             "exploration_scheduler" : scheduler_step.outputs.parameters['exploration_scheduler'],
             "lmp_task_grp" : scheduler_step.outputs.parameters['lmp_task_grp'],
         },
