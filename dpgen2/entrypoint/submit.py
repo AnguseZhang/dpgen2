@@ -31,8 +31,6 @@ from dpgen2.op import (
     RunDPTrain,
     PrepLmp,
     RunLmp,
-    PrepVasp,
-    RunVasp,
     SelectConfs,
     CollectData,
 )
@@ -46,7 +44,10 @@ from dpgen2.flow import (
     ConcurrentLearning,
 )
 from dpgen2.fp import (
-    VaspInputs,
+    fp_styles,
+)
+from dpgen2.conf import (
+    conf_styles,
 )
 from dpgen2.exploration.scheduler import (
     ExplorationScheduler,
@@ -60,8 +61,14 @@ from dpgen2.exploration.task import (
     make_task_group_from_config,
 )
 from dpgen2.exploration.selector import (
-    ConfSelectorLammpsFrames,
+    ConfSelectorFrames,
     TrustLevel,
+)
+from dpgen2.exploration.render import (
+    TrajRenderLammps,
+)
+from dpgen2.exploration.report import (
+    ExplorationReportTrustLevels,
 )
 from dpgen2.constants import (
     default_image,
@@ -70,15 +77,21 @@ from dpgen2.constants import (
 from dpgen2.utils import (
     dump_object_to_file,
     load_object_from_file,
-    normalize_alloy_conf_dict,
-    generate_alloy_conf_file_content,
     sort_slice_ops,
     print_keys_in_nice_format,
     workflow_config_from_dict,
     matched_step_key,
+    bohrium_config_from_dict,
 )
 from dpgen2.utils.step_config import normalize as normalize_step_dict
-from dpgen2.entrypoint.submit_args import normalize as normalize_submit_args
+from dpgen2.entrypoint.common import (
+    global_config_workflow,
+    expand_sys_str,
+    expand_idx,
+)
+from dpgen2.entrypoint.args import (
+    normalize as normalize_args,
+)
 from typing import (
     Union, List, Dict, Optional,
 )
@@ -91,12 +104,6 @@ default_config = normalize_step_dict(
     }
 )
 
-def expand_sys_str(root_dir: Union[str, Path]) -> List[str]:
-    root_dir = Path(root_dir)
-    matches = [str(d) for d in root_dir.rglob("*") if (d / "type.raw").is_file()]
-    if (root_dir / "type.raw").is_file():
-        matches.append(str(root_dir))
-    return matches
 
 def make_concurrent_learning_op (
         train_style : str = 'dp',
@@ -135,11 +142,12 @@ def make_concurrent_learning_op (
         )
     else:
         raise RuntimeError(f'unknown explore_style {explore_style}')
-    if fp_style == 'vasp':
+
+    if fp_style in fp_styles.keys():        
         prep_run_fp_op = PrepRunFp(
-            "prep-run-vasp",
-            PrepVasp,
-            RunVasp,
+            f"prep-run-fp",
+            fp_styles[fp_style]['prep'],
+            fp_styles[fp_style]['run'],
             prep_config = prep_fp_config,
             run_config = run_fp_config,
             upload_python_packages = upload_python_packages,
@@ -170,32 +178,6 @@ def make_concurrent_learning_op (
     return dpgen_op
 
 
-def make_conf_list(
-        conf_list,
-        type_map,
-        fmt='vasp/poscar'
-):
-    # load confs from files
-    if isinstance(conf_list, list):
-        conf_list_fname = []
-        for jj in conf_list:
-            confs = sorted(glob.glob(jj))
-            conf_list_fname = conf_list_fname + confs
-        conf_list = []
-        for ii in conf_list_fname:
-            ss = dpdata.System(ii, type_map=type_map, fmt=fmt)
-            ss_str = dpdata.lammps.lmp.from_system_data(ss, 0)
-            conf_list.append(ss_str)
-    # generate alloy confs
-    elif isinstance(conf_list, dict):
-        conf_list['type_map'] = type_map
-        i_dict = normalize_alloy_conf_dict(conf_list)
-        conf_list = generate_alloy_conf_file_content(**i_dict)
-    else:
-        raise RuntimeError('unknown input format of conf_list: ', type(conf_list))
-    return conf_list
-
-
 def make_naive_exploration_scheduler(
         config,
         old_style = False,
@@ -214,18 +196,21 @@ def make_naive_exploration_scheduler(
     fp_task_max = config['fp_task_max'] if old_style else config['fp']['task_max']
     conv_accuracy = config['conv_accuracy'] if old_style else config['explore']['conv_accuracy']
     max_numb_iter = config['max_numb_iter'] if old_style else config['explore']['max_numb_iter']
+    output_nopbc = False if old_style else config['explore']['output_nopbc']
     fatal_at_max = config.get('fatal_at_max', True) if old_style else config['explore']['fatal_at_max']
     scheduler = ExplorationScheduler()
     
     sys_configs_lmp = []
     for sys_config in sys_configs:
-        sys_configs_lmp.append(make_conf_list(sys_config, type_map))
+        conf_style = sys_config.pop("type")        
+        generator = conf_styles[conf_style](**sys_config)
+        sys_configs_lmp.append(generator.get_file_content(type_map))
 
     for job_ in model_devi_jobs:
         if not isinstance(job_, list):
             job = [job_]
         else:
-            job = job_        
+            job = job_
         # stage
         stage = ExplorationStage()
         for jj in job:
@@ -255,16 +240,19 @@ def make_naive_exploration_scheduler(
             level_v_lo=config.get('model_devi_v_trust_lo') if old_style else config['explore']['v_trust_lo'],
             level_v_hi=config.get('model_devi_v_trust_hi') if old_style else config['explore']['v_trust_hi'],
         )
+        # report
+        report = ExplorationReportTrustLevels(trust_level, conv_accuracy)
+        render = TrajRenderLammps(nopbc=output_nopbc)
         # selector
-        selector = ConfSelectorLammpsFrames(
-            trust_level,
+        selector = ConfSelectorFrames(
+            render,
+            report,
             fp_task_max,
         )
         # stage_scheduler
         stage_scheduler = ConvergenceCheckStageScheduler(
             stage,
             selector,
-            conv_accuracy = conv_accuracy,
             max_numb_iter = max_numb_iter,
             fatal_at_max = fatal_at_max,
         )
@@ -340,20 +328,31 @@ def workflow_concurrent_learning(
 
     type_map = config['type_map'] if old_style else config['inputs']['type_map']
     numb_models = config['numb_models'] if old_style else config['train']['numb_models']
-    template_script = config['default_training_param'] if old_style else config['train']['template_script']
+    template_script_ = config['default_training_param'] if old_style else config['train']['template_script']
+    if isinstance(template_script_, list):
+        template_script = [Path(ii).read_text() for ii in template_script_]
+    else:
+        template_script = Path(template_script_).read_text()
     train_config = {} if old_style else config['train']['config']
     lmp_config = config.get('lmp_config', {}) if old_style else config['explore']['config']
-    fp_config = config.get('fp_config', {}) if old_style else config['fp']['config']
-    kspacing, kgamma = get_kspacing_kgamma_from_incar(config['fp_incar'] if old_style else config['fp']['incar'])
-    fp_pp_files = config['fp_pp_files'] if old_style else config['fp']['pp_files']
-    incar_file = config['fp_incar'] if old_style else config['fp']['incar']
-    fp_inputs = VaspInputs(
-        kspacing = kspacing,
-        kgamma = kgamma,
-        incar_template_name = incar_file,
-        potcar_names = fp_pp_files,
-    )
+    fp_config = config.get('fp_config', {}) if old_style else {}
+    if old_style:        
+        potcar_names = config['fp_pp_files']
+        incar_template_name = config['fp_incar']
+        kspacing, kgamma = get_kspacing_kgamma_from_incar(incar_template_name)
+        fp_inputs_config = {
+            'kspacing' : kspacing,
+            'kgamma' : kgamma,
+            'incar_template_name' : incar_template_name,
+            'potcar_names' : potcar_names,
+        }
+    else:
+        fp_inputs_config = config['fp']['inputs_config']
+    fp_inputs = fp_styles[fp_style]['inputs'](**fp_inputs_config)
+
     fp_config['inputs'] = fp_inputs
+    fp_config['run'] = config['fp']['run_config']
+
     init_data_prefix = config.get('init_data_prefix') if old_style else config['inputs']['init_data_prefix']
     init_data = config['init_data_sys'] if old_style else config['inputs']['init_data_sys']
     if init_data_prefix is not None:
@@ -389,32 +388,17 @@ def workflow_concurrent_learning(
     return dpgen_step
 
 
-def wf_global_workflow(
-        wf_config,
-):
-    workflow_config_from_dict(wf_config)
-
-    # lebesgue context
-    from dflow.plugins.lebesgue import LebesgueContext
-    lb_context_config = wf_config.get("lebesgue_context_config", None)
-    if lb_context_config:
-        lebesgue_context = LebesgueContext(
-            **lb_context_config,
-        )
-    else :
-        lebesgue_context = None
-
-    return lebesgue_context
-
-
 def submit_concurrent_learning(
         wf_config,
         reuse_step = None,
         old_style = False,
 ):
-    wf_config = normalize_submit_args(wf_config)
+    # normalize args
+    wf_config = normalize_args(wf_config)
 
-    context = wf_global_workflow(wf_config)
+    do_lebesgue = wf_config.get("lebesgue_context_config", None) is not None
+
+    context = global_config_workflow(wf_config, do_lebesgue=do_lebesgue)
     
     dpgen_step = workflow_concurrent_learning(wf_config, old_style=old_style)
 
@@ -433,28 +417,6 @@ def print_list_steps(
     for idx,ii in enumerate(steps):
         ret.append(f'{idx:8d}    {ii}')
     return '\n'.join(ret)
-
-
-def expand_idx (in_list) :
-    ret = []
-    for ii in in_list :
-        if isinstance(ii, int) :
-            ret.append(ii)
-        elif isinstance(ii, str):
-            step_str = ii.split(':')
-            if len(step_str) > 1 :
-                step = int(step_str[1])
-            else :
-                step = 1
-            range_str = step_str[0].split('-')
-            if len(range_str) == 2:
-                ret += range(int(range_str[0]), int(range_str[1]), step)
-            elif len(range_str) == 1 :
-                ret += [int(range_str[0])]
-            else:
-                raise RuntimeError('not expected range string', step_str[0])
-    ret = sorted(list(set(ret)))
-    return ret
 
 
 def successful_step_keys(wf):
@@ -488,9 +450,9 @@ def resubmit_concurrent_learning(
         reuse = None,
         old_style = False,
 ):
-    wf_config = normalize_submit_args(wf_config)
+    wf_config = normalize_args(wf_config)
 
-    context = wf_global_workflow(wf_config)
+    context = global_config_workflow(wf_config)
 
     old_wf = Workflow(id=wfid)
     all_step_keys = get_resubmit_keys(old_wf)

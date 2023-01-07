@@ -1,9 +1,6 @@
 from .report import (
     ExplorationReport,
 )
-from .naive_report import (
-    NaiveExplorationReport,
-)
-from .trajs_report import (
-    TrajsExplorationReport,
+from .report_trust_levels import (
+    ExplorationReportTrustLevels,
 )

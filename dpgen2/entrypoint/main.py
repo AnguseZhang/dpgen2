@@ -31,13 +31,14 @@ from .watch import (
     watch,
     default_watching_keys,
 )
+from .workflow import (
+    workflow_subcommands,
+    add_subparser_workflow_subcommand,
+    execute_workflow_subcommand,
+)
 from dpgen2 import (
     __version__
 )
-
-#####################################
-# logging
-logging.basicConfig(level=logging.INFO)
 
 
 def main_parser() -> argparse.ArgumentParser:
@@ -144,6 +145,10 @@ def main_parser() -> argparse.ArgumentParser:
     parser_download.add_argument(
         "-p","--prefix", type=str, help="the prefix of the path storing the download artifacts"
     )
+    parser_download.add_argument(
+        "-n","--no-check-point", action='store_false',
+        help="if specified, download regardless whether check points exist."
+    )
 
     ##########################################
     # watch
@@ -173,9 +178,18 @@ def main_parser() -> argparse.ArgumentParser:
     parser_watch.add_argument(
         "-p","--prefix", type=str, help="the prefix of the path storing the download artifacts"
     )
+    parser_watch.add_argument(
+        "-n","--no-check-point", action='store_false',
+        help="if specified, download regardless whether check points exist."
+    )
+
+    # workflow subcommands
+    for cmd in workflow_subcommands:
+        add_subparser_workflow_subcommand(subparsers, cmd)
 
     # --version
     parser.add_argument(
+        "-v",
         '--version', 
         action='version', 
         version='DPGEN v%s' % __version__,
@@ -203,6 +217,10 @@ def parse_args(args: Optional[List[str]] = None):
     
 
 def main():
+    #####################################
+    # logging
+    logging.basicConfig(level=logging.INFO)
+
     args = parse_args()
     dict_args = vars(args)
 
@@ -246,6 +264,7 @@ def main():
             wfid, config,
             wf_keys=args.keys,
             prefix=args.prefix,
+            chk_pnt=args.no_check_point,
         )
     elif args.command == "watch":
         with open(args.CONFIG) as fp:
@@ -257,7 +276,13 @@ def main():
             frequency=args.frequency,
             download=args.download,
             prefix=args.prefix,
+            chk_pnt=args.no_check_point,
         )
+    elif args.command in workflow_subcommands:
+        with open(args.CONFIG) as fp:
+            config = json.load(fp)
+        wfid = args.ID
+        execute_workflow_subcommand(args.command, wfid, config)
     elif args.command is None:
         pass
     else:

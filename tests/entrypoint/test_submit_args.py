@@ -1,11 +1,11 @@
 import unittest, json, shutil, os, json, textwrap
-from utils.context import dpgen2
+from .context import dpgen2
 import numpy as np
 import random
 import tempfile
 import dpdata
 from pathlib import Path
-from dpgen2.entrypoint.submit_args import (
+from dpgen2.entrypoint.args import (
     normalize,
 )
 from dpgen2.utils import (
@@ -18,7 +18,24 @@ class TestArgs(unittest.TestCase):
         old_data = json.loads(old_str)
         new_data = normalize(json.loads(new_str))
         default_config = normalize_step_dict(old_data.get('default_config', {}))
+        self.assertEqual(
+            new_data['dflow_config'], 
+            {
+                "host": "http://address.of.the.host:port",
+            }
+        )
+        self.assertEqual(
+            new_data['dflow_s3_config'], 
+            {
+                "s3_endpoint": "address.of.the.s3.sever:port",
+            }
+        )
+        self.assertEqual(
+            new_data['bohrium_config'],
+            None,
+        )
         self.assertEqual(old_data['model_devi_jobs'], new_data['explore']['stages'])
+        new_data['explore']['configurations'][0].pop("type")
         self.assertEqual(old_data['sys_configs'], new_data['explore']['configurations'])
         self.assertEqual(old_data.get('sys_prefix'), new_data['explore']['configuration_prefix'])
         self.assertEqual(old_data['mass_map'], new_data['inputs']['mass_map'])
@@ -47,14 +64,32 @@ class TestArgs(unittest.TestCase):
         self.assertEqual(old_data.get('upload_python_packages', None), new_data['upload_python_packages'])
         self.assertEqual(old_data['type_map'], new_data['inputs']['type_map'])
         self.assertEqual(old_data['numb_models'], new_data['train']['numb_models'])
-        self.assertEqual(old_data['default_training_param'], new_data['train']['template_script'])
+        # self.assertEqual(old_data['default_training_param'], new_data['train']['template_script'])
+        self.assertEqual(new_data['train']['template_script'], "dp_input_template")
         self.assertEqual(RunDPTrain.normalize_config({}), new_data['train']['config'])
         self.assertEqual(old_data.get('lmp_config', {}), new_data['explore']['config'])
-        self.assertEqual(old_data.get('fp_config', {}), new_data['fp']['config'])
-        self.assertEqual(old_data['fp_pp_files'], new_data['fp']['pp_files'])
-        self.assertEqual(old_data['fp_incar'], new_data['fp']['incar'])
+        self.assertEqual(old_data.get('fp_config', {}), new_data['fp']['run_config'])
+        self.assertEqual(old_data['fp_pp_files'], new_data['fp']['inputs_config']['pp_files'])
+        self.assertEqual(old_data['fp_incar'], new_data['fp']['inputs_config']['incar'])
         self.assertEqual(old_data.get('init_data_prefix'), new_data['inputs']['init_data_prefix'])
         self.assertEqual(old_data['init_data_sys'], new_data['inputs']['init_data_sys'])
+
+
+    def test_bohrium(self):
+        new_data = normalize(json.loads(new_str_bhr))
+        self.assertEqual(
+            new_data['bohrium_config'],
+            {
+                "username" : "foo",
+                "password" : "bar",
+                "project_id" : 10086,
+                "host": "https://workflows.deepmodeling.com",
+                "k8s_api_server": "https://workflows.deepmodeling.com",
+                "repo_key": "oss-bohrium",
+                "storage_client" : "dflow.plugins.bohrium.TiefblueClient",
+            },
+        )
+        
 
 
 old_str = textwrap.dedent("""
@@ -131,7 +166,7 @@ old_str = textwrap.dedent("""
     },
     "fp_config": {
 	"command": "source /opt/intel/oneapi/setvars.sh && mpirun -n 16 vasp_std",
-        "log" : "vasp.log",
+        "log" : "fp.log",
         "out" : "data"
     },
 
@@ -178,6 +213,8 @@ old_str = textwrap.dedent("""
 	    "lattice" : ["fcc", 4.57],
 	    "replicate" : [2, 2, 2],
 	    "numb_confs" : 30,
+            "atom_pert_dist" : 0.0,
+            "cell_pert_frac" : 0.0,
 	    "concentration" : [[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]]
 	}
     ],
@@ -358,51 +395,89 @@ new_str = textwrap.dedent("""
 	"type" :	"dp",
 	"numb_models" : 4,
 	"config" : {},
-	"template_script" : {
-	    "model" : {
-		"type_map":		["Al", "Mg"],
-		"descriptor": {
-		    "type":		"se_a",
-		    "sel":		[90, 90],
-		    "rcut_smth":	1.80,
-		    "rcut":		6.00,
-		    "neuron":	[25, 50, 100],
-		    "resnet_dt":	false,
-		    "axis_neuron":	4,
-		    "seed":		1
-		},
-		"fitting_net" : {
-		    "neuron":	[128, 128, 128],
-		    "resnet_dt":	true,
-		    "seed":		1
-		}
-	    },
-	    "loss" : {
-		"start_pref_e":	0.02,
-		"limit_pref_e":	1,
-		"start_pref_f":	1000,
-		"limit_pref_f":	1,
-		"start_pref_v":	0,
-		"limit_pref_v":	0
-	    },
-	    "learning_rate" : {
-		"start_lr":		0.001,
-		"stop_lr":		1e-8,
-		"decay_steps":	100
-	    },
-	    "training" : {
-		"training_data": {
-		    "systems": [],
-		    "batch_size":"auto"
-		},
-		"numb_steps":1000,
-		"seed":10,
-		"disp_file":"lcurve.out",
-		"disp_freq":100,
-		"save_freq":1000
-	    },
+	"template_script" : "dp_input_template"
+    },
+    "explore" : {
+	"type" : "lmp",
+	"config" : {
+	    "command": "lmp -var restart 0"
+	},
+	"max_numb_iter" :	5,
+	"conv_accuracy" :	0.9,
+	"fatal_at_max" :	false,
+	"f_trust_lo":		0.05,
+	"f_trust_hi":		0.50,
+	"configuration_prefix": null, 
+	"configuration":	[
+	    {
+                "type" : "alloy",
+		"lattice" : ["fcc", 4.57],
+		"replicate" : [2, 2, 2],
+		"numb_confs" : 30,
+		"concentration" : [[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]]
+	    }
+	],
+	"stages":	[
+	    { "_idx": 0, "ensemble": "nvt", "nsteps": 20, "press": [1.0,2.0], "sys_idx": [0], "temps": [50,100], "trj_freq": 10, "n_sample" : 3 
+	    }
+	],
+	"_comment" : "all"
+    },
+    "fp" : {
+	"type" :	"vasp",
+	"run_config" : {
+	    "command": "source /opt/intel/oneapi/setvars.sh && mpirun -n 16 vasp_std"
+	},
+	"task_max":	2,
+	"inputs_config" : {
+	    "pp_files":	{"Al" : "vasp/POTCAR.Al", "Mg" : "vasp/POTCAR.Mg"},
+	    "incar":    "vasp/INCAR",
+	    "kspacing":	0.32,
+	    "kgamma":	true
+	},
+	"_comment" : "all"
+    }
+}
+""")
+
+
+new_str_bhr = textwrap.dedent("""
+{
+    "bohrium_config": {
+        "username": "foo",
+        "password": "bar",
+        "project_id": 10086
+    },
+
+    "default_step_config" : {
+	"template_config" : {
+	    "image" : "dflow:1.1.4",
 	    "_comment" : "all"
 	},
+	"_comment" : "all"
+    },
+
+    "step_configs":{
+	"_comment" : "all"
+    },
+
+    "upload_python_packages" : "/path/to/dpgen2",
+
+    "inputs": {
+	"type_map":		["Al", "Mg"],
+	"mass_map":		[27, 24],
+	"init_data_prefix":	"",
+	"init_data_sys":	[
+	    "init/al.fcc.01x01x01/02.md/sys-0004/deepmd",
+	    "init/mg.fcc.01x01x01/02.md/sys-0004/deepmd"
+	],
+	"_comment" : "all"
+    },
+    "train":{
+	"type" :	"dp",
+	"numb_models" : 4,
+	"config" : {},
+	"template_script" : "dp_input_template",
 	"_comment" : "all"
     },
 
@@ -418,27 +493,23 @@ new_str = textwrap.dedent("""
 	"f_trust_hi":		0.50,
 	"configuration_prefix": null, 
 	"configuration":	[
-	    {
-		"lattice" : ["fcc", 4.57],
-		"replicate" : [2, 2, 2],
-		"numb_confs" : 30,
-		"concentration" : [[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]]
-	    }
 	],
 	"stages":	[
-	    { "_idx": 0, "ensemble": "nvt", "nsteps": 20, "press": [1.0,2.0], "sys_idx": [0], "temps": [50,100], "trj_freq": 10, "n_sample" : 3 
-	    }
 	],
 	"_comment" : "all"
     },
     "fp" : {
 	"type" :	"vasp",
-	"config" : {
+	"run_config" : {
 	    "command": "source /opt/intel/oneapi/setvars.sh && mpirun -n 16 vasp_std"
 	},
 	"task_max":	2,
-	"pp_files":	{"Al" : "vasp/POTCAR.Al", "Mg" : "vasp/POTCAR.Mg"},
-	"incar":         "vasp/INCAR",
+	"inputs_config" : {
+	    "pp_files":	{"Al" : "vasp/POTCAR.Al", "Mg" : "vasp/POTCAR.Mg"},
+	    "incar":    "vasp/INCAR",
+	    "kspacing":	0.32,
+	    "kgamma":	true
+	},
 	"_comment" : "all"
     }
 }

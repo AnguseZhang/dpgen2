@@ -20,10 +20,8 @@ from .dflow_config import (
     dflow_s3_config,
     workflow_config_from_dict,
 )
-from .alloy_conf import (
-    normalize as normalize_alloy_conf_dict,
-    gen_doc as gen_doc_alloy_conf_dict,
-    generate_alloy_conf_file_content,
+from .bohrium_config import(
+    bohrium_config_from_dict,
 )
 from .dflow_query import (
     get_subkey,

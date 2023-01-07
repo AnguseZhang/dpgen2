@@ -28,16 +28,17 @@ from dpgen2.constants import (
     lmp_traj_name,
     lmp_log_name,
     lmp_model_devi_name,
-    vasp_task_pattern,
+    fp_task_pattern,
+)
+from dpgen2.fp.vasp import(
     vasp_conf_name,
     vasp_input_name,
-)
+)    
 from dpgen2.op.run_dp_train import RunDPTrain
 from dpgen2.op.prep_dp_train import PrepDPTrain
 from dpgen2.op.prep_lmp import PrepExplorationTaskGroup
 from dpgen2.op.run_lmp import RunLmp
-from dpgen2.op.prep_vasp import PrepVasp
-from dpgen2.op.run_vasp import RunVasp
+from dpgen2.fp import PrepVasp, RunVasp
 from dpgen2.op.collect_data import CollectData
 from dpgen2.op.select_confs import SelectConfs
 from dpgen2.exploration.selector import TrustLevel, ConfSelector
@@ -365,7 +366,7 @@ class MockedPrepVasp(PrepVasp):
         task_paths = []
 
         for ii in range(nconfs):
-            task_path = Path(vasp_task_pattern % ii)
+            task_path = Path(fp_task_pattern % ii)
             task_path.mkdir(exist_ok=True, parents=True)
             from shutil import copyfile
             copyfile(confs[ii], task_path/vasp_conf_name)
@@ -578,7 +579,6 @@ class MockedCollectDataFailed(CollectData):
         name = Path(name)
         for ii in labeled_data:
             iiname = ii.name
-            print('copy-------------------', ii, name/iiname)
 
         raise FatalError
 
@@ -606,7 +606,6 @@ class MockedCollectDataRestart(CollectData):
         
         for ii in labeled_data:
             iiname = ii.name
-            print('copy-------------------', ii, name/iiname)
             shutil.copytree(ii, name/iiname)
             fc = (name/iiname/'data').read_text()
             fc = "restart\n" + fc
@@ -620,10 +619,35 @@ class MockedCollectDataRestart(CollectData):
 
 
 class MockedExplorationReport(ExplorationReport):
-    def __init__(self):
+    def __init__(
+            self,
+            conv_accuracy = 0.9
+    ):
+        self.conv_accuracy = conv_accuracy
         self.failed = .1
         self.candidate = .1
         self.accurate = .8
+
+    def clear(self):
+        raise NotImplementedError
+
+    def record(self, mdf, mdv):
+        raise NotImplementedError
+
+    def print(self):
+        raise NotImplementedError
+
+    def print_header(self):
+        raise NotImplementedError
+
+    def converged(self):
+        return self.accurate >= self.conv_accuracy
+
+    def no_candidate(self):
+        return self.candidate_ratio() == 0.0
+
+    def get_candidate_ids(self, max_nframes):
+        raise NotImplementedError
 
     def failed_ratio (
             self, 
@@ -691,16 +715,17 @@ class MockedStage2(ExplorationStage):
 
 class MockedConfSelector(ConfSelector):
     def __init__(
-            self,
+            self,            
             trust_level: TrustLevel = TrustLevel(0.1, 0.2),
+            conv_accuracy: float = 0.9,
     ):
         self.trust_level = trust_level
+        self.conv_accuracy = conv_accuracy
 
     def select (
             self,
             trajs : List[Path],
             model_devis : List[Path],
-            traj_fmt : str = 'deepmd/npy',
             type_map : List[str] = None,
     ) -> Tuple[List[ Path ], TrustLevel] :
         confs = []
@@ -723,7 +748,7 @@ class MockedConfSelector(ConfSelector):
             fname = Path('conf.1')
             fname.write_text('conf of conf.1')
             confs.append(fname)
-        report = MockedExplorationReport()
+        report = MockedExplorationReport(conv_accuracy=self.conv_accuracy)
         return confs, report
 
 class MockedSelectConfs(SelectConfs):
@@ -757,5 +782,8 @@ class MockedConstTrustLevelStageScheduler(ConvergenceCheckStageScheduler):
             conv_accuracy : float = 0.9,
             max_numb_iter : int = None,
     ):
-        self.selector = MockedConfSelector(trust_level)
-        super().__init__(stage, self.selector, conv_accuracy, max_numb_iter)
+        self.selector = MockedConfSelector(
+            trust_level, 
+            conv_accuracy=conv_accuracy,
+        )
+        super().__init__(stage, self.selector, max_numb_iter=max_numb_iter)
